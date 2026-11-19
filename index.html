@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>いっしょにジグソー</title>
+<style>
+  :root { --bg:#f6f1e7; --ink:#3b3228; --accent:#c9663d; --sub:#8a7f72; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Hiragino Sans","Yu Gothic","Meiryo",sans-serif; background:var(--bg); color:var(--ink); min-height:100vh; display:flex; flex-direction:column; align-items:center; }
+  header { width:100%; padding:10px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; background:#fffffff0; border-bottom:1px solid #0001; }
+  h1 { font-size:1.1rem; margin:0; }
+  #status { font-size:.9rem; color:var(--sub); }
+  #players { font-size:.9rem; }
+  .screen { display:none; width:100%; max-width:1100px; padding:24px; }
+  .screen.active { display:block; }
+  .card { background:#fff; border-radius:12px; padding:24px; box-shadow:0 2px 12px #0001; max-width:520px; margin:0 auto; }
+  label { display:block; margin:14px 0 6px; font-weight:bold; }
+  select, input[type=text], input[type=file] { font-size:1rem; padding:6px; max-width:100%; }
+  input[type=text] { width:100%; padding:8px; }
+  button { margin-top:14px; padding:10px 18px; font-size:1rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; touch-action:manipulation; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.sub { background:var(--sub); }
+  .hint { font-size:.85rem; color:var(--sub); line-height:1.6; }
+  #shareBox { margin:0 0 12px; padding:12px; background:#fff3e8; border-radius:8px; word-break:break-all; font-size:.9rem; }
+  .bar { display:flex; gap:12px; justify-content:space-between; align-items:center; padding:8px 4px; flex-wrap:wrap; }
+  .tools button { margin-top:0; padding:8px 12px; }
+  canvas#cv { width:100%; height:auto; background:#fffdf8; border-radius:12px; box-shadow:0 2px 12px #0001; touch-action:none; display:block; }
+  #confetti { position:fixed; left:0; top:0; width:100vw; height:100vh; pointer-events:none; z-index:50; }
+  #finishOverlay { display:none; position:fixed; inset:0; background:#0006; z-index:40; align-items:center; justify-content:center; }
+  #finishOverlay .card { text-align:center; max-width:640px; width:calc(100% - 40px); }
+  #finalImg { width:100%; max-width:480px; border-radius:10px; }
+  #finalTime { font-size:1.3rem; margin:10px 0 4px; color:var(--accent); font-weight:bold; }
+  #finalNames { color:var(--sub); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>いっしょにジグソー</h1>
+  <div id="players"></div>
+  <div id="status">準備中</div>
+</header>
+
+<!-- 新規作成 -->
+<section id="setup" class="screen active">
+  <div class="card">
+    <h2 style="margin-top:0">新しいパズルを作る</h2>
+    <label>あなたの名前</label>
+    <input type="text" id="myName" value="プレイヤー1" maxlength="12">
+    <label>絵（画像ファイル）</label>
+    <input type="file" id="fileInput" accept="image/*">
+    <p class="hint">画像は正方形に切り抜かれます。選ばなければサンプルの絵を使います。</p>
+    <label>難易度</label>
+    <select id="size">
+      <option value="8">8 × 8（64ピース）ちょっとした暇つぶし 5〜15分</option>
+      <option value="10" selected>10 × 10（100ピース）普段遊ぶのに最適 15〜30分</option>
+      <option value="14">14 × 14（196ピース）じっくり協力プレイ 30〜60分以上</option>
+    </select>
+    <button id="createBtn">部屋を作る</button>
+  </div>
+</section>
+
+<!-- 参加 -->
+<section id="join" class="screen">
+  <div class="card">
+    <h2 style="margin-top:0">部屋に参加</h2>
+    <div id="joinForm">
+      <label>あなたの名前</label>
+      <input type="text" id="joinName" value="プレイヤー2" maxlength="12">
+      <button id="joinBtn">参加する</button>
+    </div>
+    <p id="joinMsg" class="hint"></p>
+  </div>
+</section>
+
+<!-- ゲーム -->
+<section id="game" class="screen">
+  <div id="shareBox" style="display:none">
+    <b>相手に送るリンク：</b><br>
+    <span id="shareLink"></span><br>
+    <button id="copyBtn" class="sub">リンクをコピー</button>
+  </div>
+  <div class="bar">
+    <div>経過時間：<span id="timer">0:00</span></div>
+    <div class="tools">
+      <button id="zoomOut" class="sub">−</button>
+      <button id="zoomIn" class="sub">＋</button>
+      <button id="resetView" class="sub">全体表示</button>
+      <button id="ghostBtn">完成見本（押している間）</button>
+    </div>
+  </div>
+  <canvas id="cv" width="1100" height="640"></canvas>
+  <p class="hint">ピースをドラッグで動かします。隣のピースを正しい位置に近づけると、くっついてグループになります。相手が掴んでいるピースは動かせません。背景をドラッグすると画面を動かせます。ホイールで拡大・縮小できます。</p>
+  <div class="bar">
+    <button id="newBtn" class="sub">新しく作り直す</button>
+  </div>
+</section>
+
+<canvas id="confetti"></canvas>
+<div id="finishOverlay">
+  <div class="card">
+    <h2 style="margin-top:0">🎉 完成！</h2>
+    <img id="finalImg" alt="完成画像">
+    <div id="finalTime"></div>
+    <div id="finalNames"></div>
+    <button id="closeFinish">閉じる</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const W = 1100, H = 640;
+const BOARD = 560, BX = 40, BY = 40, TRAY_X = 620;
+const COL = { h: '#ff8a3d', g: '#4fc3f7' };      // 作った人＝オレンジ、参加した人＝水色
+const COLNAME = { h: 'オレンジ', g: '水色' };
+const STAR_COLS = ['#ffd54f', '#ff8a3d', '#4fc3f7', '#ef5350'];
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const cf = $('confetti'), cfx = cf.getContext('2d');
+
+let peer = null, conn = null, role = null;     // role: 'h'（作った人）/ 'g'（参加した人）
+let myName = '', partnerName = '';
+let img = null;
+let cols = 0, L = null;                         // cols = rows（正方形のピース）
+let pieces = [], order = [];                    // pieces[i] = {c, r, x, y, g（グループID）, by（最後に動かした人）}
+let holds = {};                                 // holds[グループID] = 'h' / 'g'（掴んでいる人）
+let EH = [], EV = [];                           // 境界ごとの凸の向き
+let dragging = null, panning = null;
+let view = { s: 1, ox: 0, oy: 0 };
+let dirty = false, needDraw = true, lastBroadcast = 0, lastMoveT = 0, lastCurT = 0;
+let partnerCur = null;
+let startedAt = 0, doneMs = null, finished = false, shownFinish = false;
+let pendingEv = [], fx = [];
+let showGhost = false;
+let chunkBuf = null, looping = false, roomId = null;
+
+// ---------- 起動 ----------
+const params = new URLSearchParams(location.search);
+const joinId = params.get('join');
+if (joinId) {
+  show('join');
+  setStatus('参加');
+} else {
+  show('setup');
+  setStatus('準備中');
+}
+
+$('createBtn').onclick = async () => {
+  $('createBtn').disabled = true;
+  try {
+    const f = $('fileInput').files[0];
+    const url = f ? await fileToDataUrl(f) : defaultImageUrl();
+    myName = $('myName').value.trim() || 'プレイヤー1';
+    await startHost(url, +$('size').value);
+  } catch (e) {
+    setStatus('画像を読み込めませんでした');
+  }
+  $('createBtn').disabled = false;
+};
+
+$('joinBtn').onclick = () => {
+  myName = $('joinName').value.trim() || 'プレイヤー2';
+  $('joinBtn').disabled = true;
+  $('joinForm').style.display = 'none';
+  joinGame(joinId);
+};
+
+$('copyBtn').onclick = () => {
+  navigator.clipboard.writeText($('shareLink').textContent).then(() => {
+    $('copyBtn').textContent = 'コピーしました';
+  });
+};
+
+$('newBtn').onclick = () => {
+  if (confirm('新しいパズルを作ります。今の部屋は閉じられます。')) location.href = location.pathname;
+};
+
+$('zoomIn').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1.25);
+$('zoomOut').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1 / 1.25);
+$('resetView').onclick = () => { view = { s: 1, ox: 0, oy: 0 }; needDraw = true; };
+
+const ghostBtn = $('ghostBtn');
+const ghostOn = () => { showGhost = true; needDraw = true; };
+const ghostOff = () => { showGhost = false; needDraw = true; };
+ghostBtn.addEventListener('pointerdown', e => { e.preventDefault(); ghostOn(); });
+ghostBtn.addEventListener('pointerup', ghostOff);
+ghostBtn.addEventListener('pointerleave', ghostOff);
+ghostBtn.addEventListener('pointercancel', ghostOff);
+
+$('closeFinish').onclick = () => { $('finishOverlay').style.display = 'none'; };
+
+// ---------- 画面 ----------
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
+}
+function setStatus(t) { $('status').textContent = t; }
+function updatePlayers() {
+  const other = role === 'h' ? 'g' : 'h';
+  $('players').textContent = `あなた：${myName}（${COLNAME[role]}）　相手：${partnerName || '待機中'}` + (partnerName ? `（${COLNAME[other]}）` : '');
+}
+
+// ---------- 作る側 ----------
+async function startHost(dataUrl, n) {
+  role = 'h';
+  cols = n;
+  img = await loadImage(dataUrl);
+  L = layoutFor();
+  makeEdges();
+  pieces = makePieces();
+  order = pieces.map((_, i) => i);
+  holds = {};
+  startedAt = Date.now(); doneMs = null; finished = false; shownFinish = false;
+  showGame();
+  updatePlayers();
+
+  if (peer) peer.destroy();
+  roomId = 'jigsaw-' + randomId();
+  peer = new Peer(roomId);
+  peer.on('open', () => {
+    const url = location.href.split('?')[0] + '?join=' + roomId;
+    $('shareLink').textContent = url;
+    $('shareBox').style.display = 'block';
+    setStatus('相手の参加を待っています');
+  });
+  peer.on('connection', c2 => {
+    if (conn && conn.open) { c2.close(); return; }   // 2人まで
+    attachConn(c2, true);
+  });
+  peer.on('error', e => setStatus('エラー: ' + e.type));
+}
+
+// ---------- 参加する側 ----------
+function joinGame(hostId) {
+  peer = new Peer();
+  peer.on('open', () => {
+    const c = peer.connect(hostId, { reliable: true });
+    attachConn(c, false);
+    $('joinMsg').textContent = '部屋に接続しています…';
+  });
+  peer.on('error', e => {
+    $('joinMsg').textContent = e.type === 'peer-unavailable'
+      ? '部屋が見つかりません。リンクを確認してください。'
+      : 'エラー: ' + e.type;
+  });
+}
+
+// ---------- 接続 ----------
+function attachConn(c, isHost) {
+  conn = c;
+  const onOpen = () => {
+    if (!isHost) {
+      conn.send({ t: 'hello', name: myName });
+      setStatus('接続しました。絵を受信中…');
+    } else {
+      setStatus('相手の接続を待っています…');
+    }
+  };
+  c.on('open', onOpen);
+  if (c.open) onOpen();
+  c.on('data', onData);
+  c.on('close', () => {
+    conn = null; partnerCur = null;
+    if (isHost) {
+      // 切れた相手が掴んでいたグループは解放する
+      for (const k of Object.keys(holds)) if (holds[k] === 'g') delete holds[k];
+      partnerName = '';
+      setStatus('相手が退出しました（リンクで再参加できます）');
+      updatePlayers();
+    } else {
+      dragging = null;
+      setStatus('接続が切れました。リンクを開き直してください');
+    }
+    needDraw = true;
+  });
+  c.on('error', () => {});
+}
+
+function sendImage() {
+  const data = imgDataUrl();
+  const CH = 50000;
+  const n = Math.ceil(data.length / CH);
+  conn.send({ t: 'imginfo', n });
+  for (let k = 0; k < n; k++) conn.send({ t: 'imgchunk', k, d: data.slice(k * CH, (k + 1) * CH) });
+  sendInit();
+}
+
+function imgDataUrl() { return img.src; }
+
+function sendInit() {
+  conn.send({
+    t: 'init', cols, p: packState(), o: order, hd: holds,
+    e: { h: EH, v: EV }, hostName: myName,
+    elapsed: Date.now() - startedAt, done: finished, ms: doneMs
+  });
+  dirty = false;
+}
+
+function onData(m) {
+  switch (m.t) {
+    case 'hello':
+      if (role === 'h') {
+        partnerName = m.name;
+        updatePlayers();
+        setStatus('一緒に遊んでいます');
+        sendImage();
+      }
+      break;
+    case 'act':
+      if (role === 'h') applyAct('g', m);
+      break;
+    case 'state':
+      if (role === 'g') applyState(m);
+      break;
+    case 'cur':
+      partnerCur = { x: m.x, y: m.y, t: performance.now() };
+      needDraw = true;
+      break;
+    case 'imginfo':
+      chunkBuf = new Array(m.n);
+      break;
+    case 'imgchunk':
+      if (chunkBuf) chunkBuf[m.k] = m.d;
+      break;
+    case 'init':
+      if (role !== 'h' && chunkBuf) {
+        const data = chunkBuf.join('');
+        chunkBuf = null;
+        loadImage(data).then(im => startGuest(m, im));
+      }
+      break;
+  }
+}
+
+function startGuest(m, im) {
+  role = 'g';
+  img = im;
+  cols = m.cols;
+  L = layoutFor();
+  EH = m.e.h; EV = m.e.v;
+  pieces = m.p.map((a, i) => mkPiece(i, a));
+  order = m.o.slice();
+  holds = Object.assign({}, m.hd);
+  startedAt = Date.now() - m.elapsed;
+  finished = m.done; doneMs = m.ms; shownFinish = finished;
+  partnerName = m.hostName;
+  showGame();
+  updatePlayers();
+  setStatus('参加しました');
+}
+
+function sendState() {
+  conn.send({ t: 'state', p: packState(), o: order, hd: holds, done: finished, ms: doneMs, ev: pendingEv });
+  pendingEv = [];
+}
+
+// 相手からの状態を反映する。自分が掴んでいるグループは位置を上書きしない
+function applyState(m) {
+  if (!pieces.length) return;
+  if (dragging && m.hd[dragging.g] !== undefined && m.hd[dragging.g] !== role) {
+    dragging = null;                       // 先に取られた場合は掴みを解除
+  }
+  const dragG = dragging ? dragging.g : null;
+  holds = Object.assign({}, m.hd);
+  if (dragging) holds[dragG] = role;
+  m.p.forEach((a, i) => {
+    const p = pieces[i];
+    if (dragG !== null && p.g === dragG) return;
+    p.x = a[0]; p.y = a[1]; p.g = a[2]; p.by = a[3];
+  });
+  order = m.o.slice();
+  finished = m.done; doneMs = m.ms;
+  (m.ev || []).forEach(addFx);
+  updateFinish();
+  needDraw = true;
+}
+
+// ---------- ゲームの中身 ----------
+function layoutFor() {
+  const pw = BOARD / cols;
+  return { bx: BX, by: BY, pw, ph: pw, m: 0.36 * pw, S: BOARD };
+}
+
+function mkPiece(i, a) {
+  return { c: i % cols, r: Math.floor(i / cols), x: a[0], y: a[1], g: a[2], by: a[3] };
+}
+
+function makePieces() {
+  const arr = [];
+  for (let i = 0; i < cols * cols; i++) {
+    const x = TRAY_X + Math.random() * (W - TRAY_X - L.pw - 10);
+    const y = 40 + Math.random() * (H - 60 - L.ph);
+    arr.push({ c: i % cols, r: Math.floor(i / cols), x, y, g: i, by: null });
+  }
+  return arr;
+}
+
+function packState() {
+  return pieces.map(p => [p.x, p.y, p.g, p.by]);
+}
+
+// 内側の境界ごとに凸の向きをランダムに決める
+function makeEdges() {
+  EH = new Array((cols + 1) * cols).fill(0);
+  EV = new Array(cols * (cols + 1)).fill(0);
+  for (let r = 1; r < cols; r++)
+    for (let c = 0; c < cols; c++) EH[r * cols + c] = Math.random() < 0.5 ? 1 : -1;
+  for (let r = 0; r < cols; r++)
+    for (let c = 1; c < cols; c++) EV[r * (cols + 1) + c] = Math.random() < 0.5 ? 1 : -1;
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function snapD() { return Math.max(10, L.pw * 0.3); }
+
+function membersOf(g) {
+  const out = [];
+  for (let i = 0; i < pieces.length; i++) if (pieces[i].g === g) out.push(i);
+  return out;
+}
+
+function moveGroupBy(g, dx, dy) {
+  for (const q of pieces) if (q.g === g) { q.x += dx; q.y += dy; }
+}
+
+// 掴んだピースを (x,y) へ動かし、同じグループは一緒に動く
+function moveGroupTo(p, x, y) {
+  const nx = clamp(x, 0, W - L.pw), ny = clamp(y, 0, H - L.ph);
+  moveGroupBy(p.g, nx - p.x, ny - p.y);
+}
+
+// 1つの操作を適用する。who は 'h' か 'g'。成功したら true
+function applyAct(who, m) {
+  const p = pieces[m.i];
+  if (!p) return false;
+  let ok = false;
+  if (m.a === 'grab') {
+    if (holds[p.g] === undefined) {
+      holds[p.g] = who;
+      const mem = membersOf(p.g);
+      order = order.filter(k => !mem.includes(k));
+      order.push(...mem);
+      ok = true;
+    }
+  } else if (m.a === 'move' || m.a === 'release') {
+    if (holds[p.g] !== who) return false;
+    if (m.x !== undefined) moveGroupTo(p, m.x, m.y);
+    ok = true;
+    if (m.a === 'release') releaseGroup(who, p.g, p.by);
+  }
+  if (ok) dirty = true;
+  needDraw = true;
+  return ok;
+}
+
+// 自分の操作：ローカルに即反映し、参加側なら相手（作った側）にも送る
+function localAct(m) {
+  const ok = applyAct(role, m);
+  if (role === 'g' && ok && conn && conn.open) conn.send(Object.assign({ t: 'act' }, m));
+  return ok;
+}
+
+// グループを離したときの処理：隣との合体、盤面への吸着、完成判定
+function releaseGroup(who, g0) {
+  delete holds[g0];
+  membersOf(g0).forEach(i => { pieces[i].by = who; });
+
+  // 隣り合うグループとの合体（正しい相対位置なら自動接続）
+  let merged = true, guard = 0;
+  while (merged && guard++ < 500) {
+    merged = false;
+    for (const i of membersOf(g0)) {
+      const a = pieces[i];
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const cc = a.c + dc, rr = a.r + dr;
+        if (cc < 0 || rr < 0 || cc >= cols || rr >= cols) continue;
+        const b = pieces[rr * cols + cc];
+        if (b.g === g0 || holds[b.g] !== undefined) continue;
+        const ex = a.x + dc * L.pw, ey = a.y + dr * L.ph;
+        if (Math.hypot(b.x - ex, b.y - ey) < snapD()) {
+          const gb = b.g;
+          const big = a.by !== null && b.by !== null && a.by !== b.by;   // 別の人が組んだもの同士
+          moveGroupBy(gb, ex - b.x, ey - b.y);
+          pieces.forEach(q => { if (q.g === gb) q.g = g0; });
+          addEvent(big ? 'big' : 'small', a.x + L.pw / 2, a.y + L.ph / 2);
+          merged = true;
+          break;
+        }
+      }
+      if (merged) break;
+    }
+  }
+
+  // 盤面の正しい位置に近ければ吸着
+  const anchor = membersOf(g0).find(i => {
+    const q = pieces[i];
+    return Math.hypot(q.x - (L.bx + q.c * L.pw), q.y - (L.by + q.r * L.ph)) < snapD();
+  });
+  if (anchor !== undefined) {
+    const q = pieces[anchor];
+    moveGroupBy(g0, L.bx + q.c * L.pw - q.x, L.by + q.r * L.ph - q.y);
+    addEvent('small', q.x + L.pw / 2, q.y + L.ph / 2);
+  }
+
+  checkDone();
+}
+
+function checkDone() {
+  if (finished) return;
+  const all = pieces.every(q => Math.abs(q.x - (L.bx + q.c * L.pw)) < 1 && Math.abs(q.y - (L.by + q.r * L.ph)) < 1);
+  if (all) {
+    finished = true;
+    doneMs = Date.now() - startedAt;
+    updateFinish();
+  }
+}
+
+// 演出は作った側で発生させ、状態と一緒に相手へ送る
+function addEvent(type, x, y) {
+  const ev = { type, x, y };
+  if (role === 'h') {
+    addFx(ev);
+    pendingEv.push(ev);
+  }
+}
+
+function addFx(ev) {
+  const f = { type: ev.type, x: ev.x, y: ev.y, t: performance.now(), parts: [] };
+  if (ev.type === 'big') {
+    for (let k = 0; k < 24; k++) {
+      const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 90;
+      f.parts.push({ vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
+    }
+  }
+  fx.push(f);
+  needDraw = true;
+}
+
+function updateFinish() {
+  if (finished && !shownFinish) { shownFinish = true; celebrate(); }
+  if (!finished) shownFinish = false;
+}
+
+function celebrate() {
+  $('finalImg').src = img.src;
+  $('finalTime').textContent = '所要時間 ' + fmt(doneMs);
+  $('finalNames').textContent = myName + ' × ' + (partnerName || '相手');
+  $('finishOverlay').style.display = 'flex';
+  startConfetti(4000);
+}
+
+function startConfetti(ms) {
+  cf.width = innerWidth; cf.height = innerHeight;
+  const parts = [];
+  for (let i = 0; i < 160; i++) {
+    parts.push({
+      x: Math.random() * cf.width, y: -Math.random() * cf.height,
+      vx: (Math.random() - 0.5) * 2, vy: 2 + Math.random() * 3,
+      rot: Math.random() * 6, c: STAR_COLS[i % STAR_COLS.length]
+    });
+  }
+  const t0 = performance.now();
+  function step(now) {
+    const age = now - t0;
+    cfx.clearRect(0, 0, cf.width, cf.height);
+    for (const p of parts) {
+      p.x += p.vx; p.y += p.vy; p.rot += 0.05;
+      cfx.save(); cfx.translate(p.x, p.y); cfx.rotate(p.rot);
+      cfx.fillStyle = p.c; cfx.fillRect(-4, -2, 8, 4);
+      cfx.restore();
+    }
+    if (age < ms) requestAnimationFrame(step);
+    else cfx.clearRect(0, 0, cf.width, cf.height);
+  }
+  requestAnimationFrame(step);
+}
+
+// ---------- 座標・表示倍率 ----------
+function toScreen(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+}
+function toWorld(s) {
+  return { x: (s.x - view.ox) / view.s, y: (s.y - view.oy) / view.s };
+}
+function applyView() {
+  ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+}
+function zoomAt(sc, f) {
+  const ns = clamp(view.s * f, 0.5, 3);
+  const k = ns / view.s;
+  view.ox = sc.x - (sc.x - view.ox) * k;
+  view.oy = sc.y - (sc.y - view.oy) * k;
+  view.s = ns;
+  needDraw = true;
+}
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(toScreen(e), e.deltaY < 0 ? 1.1 : 1 / 1.1);
+}, { passive: false });
+
+function sendCur(w) {
+  const now = performance.now();
+  if (now - lastCurT < 60 || !conn || !conn.open) return;
+  lastCurT = now;
+  conn.send({ t: 'cur', x: w.x, y: w.y });
+}
+
+// ---------- マウス操作 ----------
+cv.addEventListener('pointerdown', e => {
+  if (!img || !pieces.length) return;
+  const sc = toScreen(e), w = toWorld(sc);
+  applyView();
+  let hit = -1;
+  for (let k = order.length - 1; k >= 0; k--) {
+    const i = order[k], p = pieces[i];
+    tracePiece(p.c, p.r, p.x, p.y);
+    if (ctx.isPointInPath(sc.x, sc.y)) { hit = i; break; }
+  }
+  if (hit >= 0) {
+    if (!finished && localAct({ a: 'grab', i: hit })) {
+      const p = pieces[hit];
+      dragging = { i: hit, g: p.g, offX: w.x - p.x, offY: w.y - p.y };
+      cv.setPointerCapture(e.pointerId);
+    }
+  } else {
+    panning = { sx: sc.x, sy: sc.y, ox: view.ox, oy: view.oy };
+    cv.setPointerCapture(e.pointerId);
+  }
+  needDraw = true;
+});
+
+cv.addEventListener('pointermove', e => {
+  const sc = toScreen(e), w = toWorld(sc);
+  sendCur(w);
+  if (panning) {
+    view.ox = panning.ox + (sc.x - panning.sx);
+    view.oy = panning.oy + (sc.y - panning.sy);
+    needDraw = true;
+    return;
+  }
+  if (!dragging) return;
+  const tx = w.x - dragging.offX, ty = w.y - dragging.offY;
+  applyAct(role, { a: 'move', i: dragging.i, x: tx, y: ty });
+  const now = performance.now();
+  if (role === 'g' && now - lastMoveT >= 30) {
+    lastMoveT = now;
+    if (conn && conn.open) conn.send({ t: 'act', a: 'move', i: dragging.i, x: tx, y: ty });
+  }
+});
+
+function endPointer() {
+  panning = null;
+  if (!dragging) return;
+  const i = dragging.i, p = pieces[i];
+  dragging = null;
+  localAct({ a: 'release', i, x: p.x, y: p.y });
+  needDraw = true;
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+
+// ---------- 描画 ----------
+// ジグソーの輪郭を現在のパスに描く（左上 → 右上 → 右下 → 左下）
+function tracePiece(c, r, x, y) {
+  const pw = L.pw, ph = L.ph;
+  const tl = [x, y], tr = [x + pw, y], br = [x + pw, y + ph], bl = [x, y + ph];
+  ctx.beginPath();
+  ctx.moveTo(tl[0], tl[1]);
+  traceEdge(tl, tr, sideMode(c, r, 't'));
+  traceEdge(tr, br, sideMode(c, r, 'r'));
+  traceEdge(br, bl, sideMode(c, r, 'b'));
+  traceEdge(bl, tl, sideMode(c, r, 'l'));
+  ctx.closePath();
+}
+
+// 0 = 直線、+1 = 外側へ凸、-1 = 内側へ凸（隣のピースの凸とかみ合う凹になる）
+function sideMode(c, r, side) {
+  if (side === 't') { if (r === 0) return 0; return EH[r * cols + c] === -1 ? 1 : -1; }
+  if (side === 'b') { if (r === cols - 1) return 0; return EH[(r + 1) * cols + c] === 1 ? 1 : -1; }
+  if (side === 'l') { if (c === 0) return 0; return EV[r * (cols + 1) + c] === -1 ? 1 : -1; }
+  if (side === 'r') { if (c === cols - 1) return 0; return EV[r * (cols + 1) + c + 1] === 1 ? 1 : -1; }
+  return 0;
+}
+
+// 1辺分の線を描く。凸は首→頭→首の形
+function traceEdge(a, b, mode) {
+  if (!mode) { ctx.lineTo(b[0], b[1]); return; }
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const dx = (b[0] - a[0]) / len, dy = (b[1] - a[1]) / len;
+  const nx = dy * mode, ny = -dx * mode;     // 凸の出る向き
+  const P = (u, v) => [a[0] + dx * u * len + nx * v * len, a[1] + dy * u * len + ny * v * len];
+  let q = P(0.36, 0);
+  ctx.lineTo(q[0], q[1]);
+  let c1 = P(0.40, 0.02), e = P(0.40, 0.10);
+  ctx.quadraticCurveTo(c1[0], c1[1], e[0], e[1]);
+  const N = 24;
+  for (let i = 1; i <= N; i++) {
+    const ang = (225 - 270 * i / N) * Math.PI / 180;
+    const pt = P(0.5 + 0.14 * Math.cos(ang), 0.2 + 0.14 * Math.sin(ang));
+    ctx.lineTo(pt[0], pt[1]);
+  }
+  c1 = P(0.60, 0.02); e = P(0.64, 0);
+  ctx.quadraticCurveTo(c1[0], c1[1], e[0], e[1]);
+  ctx.lineTo(b[0], b[1]);
+}
+
+// 1枚のピースを凸凹の形で切り抜いて描く。掴まれている色の枠を付ける
+function drawPiece(p) {
+  const pw = L.pw, ph = L.ph, m = L.m;
+  const sw = img.naturalWidth / cols, sh = img.naturalHeight / cols;
+  const kx = sw / pw, ky = sh / ph;
+  ctx.save();
+  tracePiece(p.c, p.r, p.x, p.y);
+  ctx.clip();
+  ctx.drawImage(img,
+    p.c * sw - m * kx, p.r * sh - m * ky, sw + 2 * m * kx, sh + 2 * m * ky,
+    p.x - m, p.y - m, pw + 2 * m, ph + 2 * m);
+  ctx.restore();
+
+  tracePiece(p.c, p.r, p.x, p.y);
+  const h = holds[p.g];
+  if (h === undefined) { ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; }
+  else { ctx.strokeStyle = COL[h]; ctx.lineWidth = 3; }
+  ctx.stroke();
+}
+
+function draw() {
+  const now = performance.now();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fffdf8';
+  ctx.fillRect(0, 0, W, H);
+  applyView();
+  if (!img || !L) return;
+
+  // 盤面（うっすら完成イメージ）
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  ctx.drawImage(img, L.bx, L.by, L.S, L.S);
+  ctx.restore();
+  ctx.strokeStyle = '#c9b9a3';
+  ctx.setLineDash([6, 6]);
+  ctx.strokeRect(L.bx, L.by, L.S, L.S);
+  ctx.setLineDash([]);
+
+  for (const i of order) drawPiece(pieces[i]);
+
+  // 完成見本（ボタンを押している間だけ）
+  if (showGhost) {
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(img, L.bx, L.by, L.S, L.S);
+    ctx.restore();
+  }
+
+  // 演出（控えめなリング・大きいときはキラキラ）
+  fx = fx.filter(f => (now - f.t) / 1000 < (f.type === 'big' ? 1.6 : 0.6));
+  for (const f of fx) {
+    const age = (now - f.t) / 1000;
+    if (f.type === 'small') {
+      ctx.strokeStyle = `rgba(255,200,80,${(1 - age / 0.6) * 0.8})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, L.pw * (0.3 + age * 1.2), 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      const k = 1 - age / 1.6;
+      ctx.strokeStyle = `rgba(255,160,60,${k * 0.9})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, L.pw * (0.5 + age * 3), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = k;
+      f.parts.forEach((pt, j) => {
+        ctx.fillStyle = STAR_COLS[j % STAR_COLS.length];
+        ctx.beginPath();
+        ctx.arc(f.x + pt.vx * age, f.y + pt.vy * age, 3 + 2 * k, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // 相手のカーソル（名前付き）
+  const cursorActive = partnerCur && now - partnerCur.t < 3000;
+  if (cursorActive) {
+    ctx.fillStyle = COL[role === 'h' ? 'g' : 'h'];
+    ctx.beginPath();
+    ctx.arc(partnerCur.x, partnerCur.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(partnerName || '相手', partnerCur.x + 10, partnerCur.y - 8);
+  }
+
+  // 演出やカーソルが続く間は再描画を続ける
+  if (fx.length || cursorActive) needDraw = true;
+}
+
+function loop(now) {
+  if (needDraw) { needDraw = false; draw(); }
+  if (role === 'h' && dirty && conn && conn.open && now - lastBroadcast > 30) {
+    sendState();
+    dirty = false;
+    lastBroadcast = now;
+  }
+  requestAnimationFrame(loop);
+}
+
+function showGame() {
+  show('game');
+  setStatus(role === 'h' ? '部屋を作りました' : '参加中');
+  if (!looping) { looping = true; requestAnimationFrame(loop); }
+  needDraw = true;
+}
+
+// ---------- タイマー ----------
+function fmt(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+setInterval(() => {
+  if (!pieces.length) return;
+  $('timer').textContent = finished && doneMs != null ? fmt(doneMs) : fmt(Date.now() - startedAt);
+}, 250);
+
+// ---------- 画像・デフォルト絵 ----------
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = src;
+  });
+}
+
+// 画像は正方形に切り抜き、長辺1000px以内のJPEGにする（相手に送るため）
+function fileToDataUrl(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const im = new Image();
+      im.onload = () => {
+        const side = Math.min(im.width, im.height);
+        const out = Math.min(1000, side);
+        const c = document.createElement('canvas');
+        c.width = c.height = out;
+        c.getContext('2d').drawImage(im, (im.width - side) / 2, (im.height - side) / 2, side, side, 0, 0, out, out);
+        res(c.toDataURL('image/jpeg', 0.85));
+      };
+      im.onerror = rej;
+      im.src = fr.result;
+    };
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+}
+
+function defaultImageUrl() {
+  const c = document.createElement('canvas');
+  c.width = 800; c.height = 800;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 800);
+  grd.addColorStop(0, '#ffd27a');
+  grd.addColorStop(0.6, '#ff8f6b');
+  grd.addColorStop(1, '#5a4a9c');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 800, 800);
+  g.fillStyle = '#fff3c4';
+  g.beginPath(); g.arc(520, 240, 120, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#3e6b5c';
+  g.beginPath();
+  g.moveTo(0, 560); g.lineTo(200, 380); g.lineTo(380, 560); g.lineTo(560, 400); g.lineTo(800, 600); g.lineTo(800, 800); g.lineTo(0, 800);
+  g.fill();
+  g.fillStyle = '#24453c';
+  g.beginPath();
+  g.moveTo(0, 640); g.lineTo(260, 520); g.lineTo(500, 660); g.lineTo(800, 540); g.lineTo(800, 800); g.lineTo(0, 800);
+  g.fill();
+  return c.toDataURL('image/jpeg', 0.9);
+}
+
+function randomId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+</script>
+</body>
+</html>
