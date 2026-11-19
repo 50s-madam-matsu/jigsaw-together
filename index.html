@@ -14,6 +14,7 @@
   #players { font-size:.9rem; }
   .screen { display:none; width:100%; max-width:1100px; padding:24px; }
   .screen.active { display:block; }
+  #game { max-width:1500px; }
   .card { background:#fff; border-radius:12px; padding:24px; box-shadow:0 2px 12px #0001; max-width:520px; margin:0 auto; }
   label { display:block; margin:14px 0 6px; font-weight:bold; }
   select, input[type=text], input[type=file] { font-size:1rem; padding:6px; max-width:100%; }
@@ -50,12 +51,12 @@
     <input type="text" id="myName" value="プレイヤー1" maxlength="12">
     <label>絵（画像ファイル）</label>
     <input type="file" id="fileInput" accept="image/*">
-    <p class="hint">画像は正方形に切り抜かれます。選ばなければサンプルの絵を使います。</p>
+    <p class="hint">画像は4:3に切り抜かれます（推奨：1536×1152px）。選ばなければサンプルの絵を使います。</p>
     <label>難易度</label>
     <select id="size">
-      <option value="8">8 × 8（64ピース）ちょっとした暇つぶし 5〜15分</option>
-      <option value="10" selected>10 × 10（100ピース）普段遊ぶのに最適 15〜30分</option>
-      <option value="14">14 × 14（196ピース）じっくり協力プレイ 30〜60分以上</option>
+      <option value="8">かんたん（8 × 8・64ピース）</option>
+      <option value="10" selected>ふつう（10 × 10・100ピース）</option>
+      <option value="14">むずかしい（14 × 14・196ピース）</option>
     </select>
     <button id="createBtn">部屋を作る</button>
   </div>
@@ -87,10 +88,11 @@
       <button id="zoomOut" class="sub">−</button>
       <button id="zoomIn" class="sub">＋</button>
       <button id="resetView" class="sub">全体表示</button>
+      <button id="tidyBtn" class="sub">ピースを整理</button>
       <button id="ghostBtn">完成見本（押している間）</button>
     </div>
   </div>
-  <canvas id="cv" width="1100" height="640"></canvas>
+  <canvas id="cv" width="1600" height="900"></canvas>
   <p class="hint">ピースをドラッグで動かします。隣のピースを正しい位置に近づけると、くっついてグループになります。相手が掴んでいるピースは動かせません。背景をドラッグすると画面を動かせます。ホイールで拡大・縮小できます。</p>
   <div class="bar">
     <button id="newBtn" class="sub">新しく作り直す</button>
@@ -110,13 +112,14 @@
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const W = 1100, H = 640;
-const BOARD = 560, BX = 40, BY = 40, TRAY_X = 620;
+const W = 1600, H = 900;                 // 16:9 の作業スペース
+const BW = 880, BH = 660;                // 4:3 の完成画像（盤面）のサイズ
 const COL = { h: '#ff8a3d', g: '#4fc3f7' };      // 作った人＝オレンジ、参加した人＝水色
 const COLNAME = { h: 'オレンジ', g: '水色' };
 const STAR_COLS = ['#ffd54f', '#ff8a3d', '#4fc3f7', '#ef5350'];
 const $ = id => document.getElementById(id);
-const cv = $('cv'), ctx = cv.getContext('2d');
+const cv = $('cv');
+let ctx = cv.getContext('2d');
 const cf = $('confetti'), cfx = cf.getContext('2d');
 
 let peer = null, conn = null, role = null;     // role: 'h'（作った人）/ 'g'（参加した人）
@@ -179,6 +182,7 @@ $('newBtn').onclick = () => {
 $('zoomIn').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1.25);
 $('zoomOut').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1 / 1.25);
 $('resetView').onclick = () => { view = { s: 1, ox: 0, oy: 0 }; needDraw = true; };
+$('tidyBtn').onclick = () => { localAct({ a: 'tidy' }); };
 
 const ghostBtn = $('ghostBtn');
 const ghostOn = () => { showGhost = true; needDraw = true; };
@@ -207,6 +211,7 @@ async function startHost(dataUrl, n) {
   img = await loadImage(dataUrl);
   L = layoutFor();
   makeEdges();
+  buildPieceCache();
   pieces = makePieces();
   order = pieces.map((_, i) => i);
   holds = {};
@@ -228,6 +233,7 @@ async function startHost(dataUrl, n) {
     attachConn(c2, true);
   });
   peer.on('error', e => setStatus('エラー: ' + e.type));
+  peer.on('disconnected', () => peer.reconnect());   // 接続サーバーから切れたら再接続
 }
 
 // ---------- 参加する側 ----------
@@ -238,6 +244,7 @@ function joinGame(hostId) {
     attachConn(c, false);
     $('joinMsg').textContent = '部屋に接続しています…';
   });
+  peer.on('disconnected', () => peer.reconnect());
   peer.on('error', e => {
     $('joinMsg').textContent = e.type === 'peer-unavailable'
       ? '部屋が見つかりません。リンクを確認してください。'
@@ -338,6 +345,7 @@ function startGuest(m, im) {
   cols = m.cols;
   L = layoutFor();
   EH = m.e.h; EV = m.e.v;
+  buildPieceCache();
   pieces = m.p.map((a, i) => mkPiece(i, a));
   order = m.o.slice();
   holds = Object.assign({}, m.hd);
@@ -377,8 +385,10 @@ function applyState(m) {
 
 // ---------- ゲームの中身 ----------
 function layoutFor() {
-  const pw = BOARD / cols;
-  return { bx: BX, by: BY, pw, ph: pw, m: 0.36 * pw, S: BOARD };
+  const pw = BW / cols, ph = BH / cols;               // 4:3 のマス（長方形）
+  const bx = (W - BW) / 2, by = (H - BH) / 2;          // 盤面は中央
+  const mm = 0.36 * Math.max(pw, ph);                  // 凸がはみ出す余白
+  return { bx, by, pw, ph, mx: mm, my: mm, BW, BH };
 }
 
 function mkPiece(i, a) {
@@ -388,11 +398,50 @@ function mkPiece(i, a) {
 function makePieces() {
   const arr = [];
   for (let i = 0; i < cols * cols; i++) {
-    const x = TRAY_X + Math.random() * (W - TRAY_X - L.pw - 10);
-    const y = 40 + Math.random() * (H - 60 - L.ph);
+    const [x, y] = spawnOutsideBoard();
     arr.push({ c: i % cols, r: Math.floor(i / cols), x, y, g: i, by: null });
   }
   return arr;
+}
+
+// 盤面の外側にランダムな位置を選ぶ
+function spawnOutsideBoard() {
+  for (let t = 0; t < 80; t++) {
+    const x = Math.random() * (W - L.pw), y = Math.random() * (H - L.ph);
+    if (!overlapsBoard(x, y)) return [x, y];
+  }
+  return [Math.random() * (L.bx - L.pw - 10), Math.random() * (H - L.ph)];
+}
+
+function overlapsBoard(x, y) {
+  return !(x + L.pw < L.bx - 8 || x > L.bx + BW + 8 || y + L.ph < L.by - 8 || y > L.by + BH + 8);
+}
+
+// 未接続で、誰も掴んでいないピースを盤面の外にマス目で並べ直す
+function tidyLoose() {
+  const count = {};
+  pieces.forEach(p => { count[p.g] = (count[p.g] || 0) + 1; });
+  const loose = [];
+  pieces.forEach((p, i) => { if (count[p.g] === 1 && holds[p.g] === undefined) loose.push(i); });
+  const stepX = L.pw + 12, stepY = L.ph + 12;
+  const slots = [];
+  for (let y = 0; y + L.ph <= H; y += stepY)
+    for (let x = 0; x + L.pw <= W; x += stepX)
+      if (!overlapsBoard(x, y)) slots.push([x, y]);
+  if (!slots.length) return;
+  loose.forEach((i, k) => {
+    const s = slots[k % slots.length];
+    pieces[i].x = s[0];
+    pieces[i].y = s[1];
+  });
+}
+
+// 作業スペースが画面から完全に消えないように表示位置を制限する
+function clampView() {
+  const lo = (size, s) => Math.min(0, size * (1 - s));
+  const hi = (size, s) => Math.max(0, size * (1 - s));
+  view.ox = clamp(view.ox, lo(W, view.s), hi(W, view.s));
+  view.oy = clamp(view.oy, lo(H, view.s), hi(H, view.s));
 }
 
 function packState() {
@@ -430,6 +479,7 @@ function moveGroupTo(p, x, y) {
 
 // 1つの操作を適用する。who は 'h' か 'g'。成功したら true
 function applyAct(who, m) {
+  if (m.a === 'tidy') { tidyLoose(); dirty = true; needDraw = true; return true; }
   const p = pieces[m.i];
   if (!p) return false;
   let ok = false;
@@ -591,6 +641,7 @@ function zoomAt(sc, f) {
   view.ox = sc.x - (sc.x - view.ox) * k;
   view.oy = sc.y - (sc.y - view.oy) * k;
   view.s = ns;
+  clampView();
   needDraw = true;
 }
 cv.addEventListener('wheel', e => {
@@ -635,6 +686,7 @@ cv.addEventListener('pointermove', e => {
   if (panning) {
     view.ox = panning.ox + (sc.x - panning.sx);
     view.oy = panning.oy + (sc.y - panning.sy);
+    clampView();
     needDraw = true;
     return;
   }
@@ -704,19 +756,33 @@ function traceEdge(a, b, mode) {
   ctx.lineTo(b[0], b[1]);
 }
 
-// 1枚のピースを凸凹の形で切り抜いて描く。掴まれている色の枠を付ける
-function drawPiece(p) {
-  const pw = L.pw, ph = L.ph, m = L.m;
+// 切り抜き済みピースの画像（凸の余白込み）を先に作っておく。描画が軽くなる
+let pieceCache = [];
+function buildPieceCache() {
+  pieceCache = [];
+  const pw = L.pw, ph = L.ph, mx = L.mx, my = L.my, S = 2;
   const sw = img.naturalWidth / cols, sh = img.naturalHeight / cols;
   const kx = sw / pw, ky = sh / ph;
-  ctx.save();
-  tracePiece(p.c, p.r, p.x, p.y);
-  ctx.clip();
-  ctx.drawImage(img,
-    p.c * sw - m * kx, p.r * sh - m * ky, sw + 2 * m * kx, sh + 2 * m * ky,
-    p.x - m, p.y - m, pw + 2 * m, ph + 2 * m);
-  ctx.restore();
+  const mainCtx = ctx;
+  for (let i = 0; i < cols * cols; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const cvs = document.createElement('canvas');
+    cvs.width = Math.ceil((pw + 2 * mx) * S);
+    cvs.height = Math.ceil((ph + 2 * my) * S);
+    const g = cvs.getContext('2d');
+    ctx = g;                                   // tracePiece は ctx に描くので一時的に差し替える
+    g.setTransform(S, 0, 0, S, 0, 0);
+    tracePiece(c, r, mx, my);
+    g.clip();
+    g.drawImage(img, c * sw - mx * kx, r * sh - my * ky, sw + 2 * mx * kx, sh + 2 * my * ky, 0, 0, pw + 2 * mx, ph + 2 * my);
+    pieceCache.push(cvs);
+  }
+  ctx = mainCtx;
+}
 
+// 1枚のピースを描く。掴まれている色の枠を付ける
+function drawPiece(p, i) {
+  ctx.drawImage(pieceCache[i], p.x - L.mx, p.y - L.my, L.pw + 2 * L.mx, L.ph + 2 * L.my);
   tracePiece(p.c, p.r, p.x, p.y);
   const h = holds[p.g];
   if (h === undefined) { ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; }
@@ -735,20 +801,27 @@ function draw() {
   // 盤面（うっすら完成イメージ）
   ctx.save();
   ctx.globalAlpha = 0.12;
-  ctx.drawImage(img, L.bx, L.by, L.S, L.S);
+  ctx.drawImage(img, L.bx, L.by, BW, BH);
   ctx.restore();
   ctx.strokeStyle = '#c9b9a3';
   ctx.setLineDash([6, 6]);
-  ctx.strokeRect(L.bx, L.by, L.S, L.S);
+  ctx.strokeRect(L.bx, L.by, BW, BH);
   ctx.setLineDash([]);
 
-  for (const i of order) drawPiece(pieces[i]);
+  // 画面に見えているピースだけ描く
+  const vx0 = -view.ox / view.s, vx1 = (W - view.ox) / view.s;
+  const vy0 = -view.oy / view.s, vy1 = (H - view.oy) / view.s;
+  for (const i of order) {
+    const p = pieces[i];
+    if (p.x + L.pw + L.mx < vx0 || p.x - L.mx > vx1 || p.y + L.ph + L.my < vy0 || p.y - L.my > vy1) continue;
+    drawPiece(p, i);
+  }
 
   // 完成見本（ボタンを押している間だけ）
   if (showGhost) {
     ctx.save();
     ctx.globalAlpha = 0.5;
-    ctx.drawImage(img, L.bx, L.by, L.S, L.S);
+    ctx.drawImage(img, L.bx, L.by, BW, BH);
     ctx.restore();
   }
 
@@ -839,11 +912,15 @@ function fileToDataUrl(file) {
     fr.onload = () => {
       const im = new Image();
       im.onload = () => {
-        const side = Math.min(im.width, im.height);
-        const out = Math.min(1000, side);
+        // 4:3 に中央で切り抜く（最大 1536×1152）
+        let sw = im.width, sh = im.width * 3 / 4;
+        if (sh > im.height) { sh = im.height; sw = im.height * 4 / 3; }
+        const sx = (im.width - sw) / 2, sy = (im.height - sh) / 2;
+        const outW = Math.min(1536, Math.round(sw));
         const c = document.createElement('canvas');
-        c.width = c.height = out;
-        c.getContext('2d').drawImage(im, (im.width - side) / 2, (im.height - side) / 2, side, side, 0, 0, out, out);
+        c.width = outW;
+        c.height = Math.round(outW * 3 / 4);
+        c.getContext('2d').drawImage(im, sx, sy, sw, sh, 0, 0, c.width, c.height);
         res(c.toDataURL('image/jpeg', 0.85));
       };
       im.onerror = rej;
@@ -856,14 +933,14 @@ function fileToDataUrl(file) {
 
 function defaultImageUrl() {
   const c = document.createElement('canvas');
-  c.width = 800; c.height = 800;
+  c.width = 1024; c.height = 768;
   const g = c.getContext('2d');
-  const grd = g.createLinearGradient(0, 0, 0, 800);
+  const grd = g.createLinearGradient(0, 0, 0, 768);
   grd.addColorStop(0, '#ffd27a');
   grd.addColorStop(0.6, '#ff8f6b');
   grd.addColorStop(1, '#5a4a9c');
   g.fillStyle = grd;
-  g.fillRect(0, 0, 800, 800);
+  g.fillRect(0, 0, 1024, 768);
   g.fillStyle = '#fff3c4';
   g.beginPath(); g.arc(520, 240, 120, 0, Math.PI * 2); g.fill();
   g.fillStyle = '#3e6b5c';
