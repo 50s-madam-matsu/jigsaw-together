@@ -136,6 +136,7 @@ let partnerCur = null;
 let startedAt = 0, doneMs = null, finished = false, shownFinish = false;
 let pendingEv = [], fx = [];
 let showGhost = false;
+let spaceDown = false;          // スペースキーが押されている間は true
 let chunkBuf = null, looping = false, roomId = null;
 
 // ---------- 起動 ----------
@@ -703,7 +704,8 @@ cv.addEventListener('pointerdown', e => {
       dragging = { i: hit, g: p.g, offX: w.x - p.x, offY: w.y - p.y };
       cv.setPointerCapture(e.pointerId);
     }
-  } else {
+  } else if (spaceDown) {
+    // スペースキーを押している間だけ、背景ドラッグで画面を動かす
     panning = { sx: sc.x, sy: sc.y, ox: view.ox, oy: view.oy, moved: false };
     cv.setPointerCapture(e.pointerId);
   }
@@ -741,6 +743,16 @@ function endPointer() {
   localAct({ a: 'release', i, x: p.x, y: p.y });
   needDraw = true;
 }
+// スペースキー：押している間だけ背景ドラッグで画面を動かせる（入力欄では無効）
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
+    spaceDown = true;
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') spaceDown = false;
+});
 cv.addEventListener('pointerup', endPointer);
 cv.addEventListener('pointercancel', endPointer);
 
