@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>いっしょにジグソー</title>
+<title>作業メモ</title>
 <style>
   :root { --bg:#f6f1e7; --ink:#3b3228; --accent:#c9663d; --sub:#8a7f72; }
   * { box-sizing: border-box; }
@@ -88,6 +88,9 @@
       <button id="zoomOut" class="sub">−</button>
       <button id="zoomIn" class="sub">＋</button>
       <button id="resetView" class="sub">全体表示</button>
+      <button id="centerView" class="sub">盤面を中央に</button>
+      <button id="soundBtn" class="sub">音オフ</button>
+      <button id="pauseBtn" class="sub">一時停止</button>
       <button id="tidyBtn" class="sub">ピースを整理</button>
       <button id="ghostBtn">完成見本（押している間）</button>
     </div>
@@ -112,7 +115,8 @@
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const W = 1600, H = 900;                 // 16:9 の作業スペース
+const VW = 1600, VH = 900;               // 画面に表示する大きさ（16:9）
+const W = 2400, H = 1350;                // 作業スペース全体（画面より広い）
 const BW = 880, BH = 660;                // 4:3 の完成画像（盤面）のサイズ
 const COL = { h: '#ff8a3d', g: '#4fc3f7' };      // 作った人＝オレンジ、参加した人＝水色
 const COLNAME = { h: 'オレンジ', g: '水色' };
@@ -133,7 +137,8 @@ let dragging = null, panning = null;
 let view = { s: 1, ox: 0, oy: 0 };
 let dirty = false, needDraw = true, lastBroadcast = 0, lastMoveT = 0, lastCurT = 0;
 let partnerCur = null;
-let startedAt = 0, doneMs = null, finished = false, shownFinish = false;
+let elapsedBase = 0, runStart = null, paused = false;   // 経過時間（一時停止中は進まない）
+let doneMs = null, finished = false, shownFinish = false;
 let pendingEv = [], fx = [];
 let showGhost = false;
 let spaceDown = false;          // スペースキーが押されている間は true
@@ -182,8 +187,10 @@ $('newBtn').onclick = () => {
 
 $('zoomIn').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1.25);
 $('zoomOut').onclick = () => zoomAt({ x: W / 2, y: H / 2 }, 1 / 1.25);
-$('resetView').onclick = () => { view = { s: 1, ox: 0, oy: 0 }; needDraw = true; };
+$('resetView').onclick = fitView;
+$('centerView').onclick = centerView;
 $('tidyBtn').onclick = () => { localAct({ a: 'tidy' }); };
+$('pauseBtn').onclick = () => { if (pieces.length) localAct({ a: 'pause' }); };
 
 const ghostBtn = $('ghostBtn');
 const ghostOn = () => { showGhost = true; needDraw = true; };
@@ -216,7 +223,7 @@ async function startHost(dataUrl, n) {
   pieces = makePieces();
   order = pieces.map((_, i) => i);
   holds = {};
-  startedAt = Date.now(); doneMs = null; finished = false; shownFinish = false;
+  elapsedBase = 0; runStart = Date.now(); paused = false; doneMs = null; finished = false; shownFinish = false;
   showGame();
   updatePlayers();
 
@@ -299,7 +306,7 @@ function sendInit() {
   conn.send({
     t: 'init', cols, p: packState(), o: order, hd: holds,
     e: { h: EH, v: EV }, hostName: myName,
-    elapsed: Date.now() - startedAt, done: finished, ms: doneMs
+    elapsed: elapsed(), paused, done: finished, ms: doneMs
   });
   dirty = false;
 }
@@ -350,7 +357,7 @@ function startGuest(m, im) {
   pieces = m.p.map((a, i) => mkPiece(i, a));
   order = m.o.slice();
   holds = Object.assign({}, m.hd);
-  startedAt = Date.now() - m.elapsed;
+  elapsedBase = m.elapsed; paused = m.paused; runStart = paused ? null : Date.now();
   finished = m.done; doneMs = m.ms; shownFinish = finished;
   partnerName = m.hostName;
   showGame();
@@ -359,7 +366,7 @@ function startGuest(m, im) {
 }
 
 function sendState() {
-  conn.send({ t: 'state', p: packState(), o: order, hd: holds, done: finished, ms: doneMs, ev: pendingEv });
+  conn.send({ t: 'state', p: packState(), o: order, hd: holds, paused, done: finished, ms: doneMs, ev: pendingEv });
   pendingEv = [];
 }
 
@@ -379,6 +386,7 @@ function applyState(m) {
   });
   order = m.o.slice();
   finished = m.done; doneMs = m.ms;
+  if (m.paused !== paused) setPaused(m.paused);
   (m.ev || []).forEach(addFx);
   updateFinish();
   needDraw = true;
@@ -407,11 +415,13 @@ function makePieces() {
 
 // 盤面の外側にランダムな位置を選ぶ
 function spawnOutsideBoard() {
+  // 最初の画面（盤面を中央に置いた表示）の範囲に出す
+  const x0 = L.bx + BW / 2 - VW / 2, y0 = L.by + BH / 2 - VH / 2;
   for (let t = 0; t < 80; t++) {
-    const x = Math.random() * (W - L.pw), y = Math.random() * (H - L.ph);
+    const x = x0 + Math.random() * (VW - L.pw), y = y0 + Math.random() * (VH - L.ph);
     if (!overlapsBoard(x, y)) return [x, y];
   }
-  return [Math.random() * (L.bx - L.pw - 10), Math.random() * (H - L.ph)];
+  return [x0 + 10, y0 + 10];
 }
 
 function overlapsBoard(x, y) {
@@ -440,6 +450,10 @@ function tidyLoose() {
     if (slots.length >= loose.length) break;
   }
   if (!slots.length) return;
+  // 今の表示の中心に近いマスから使う（遠くに散らばりすぎないように）
+  const cx = (VW / 2 - view.ox) / view.s, cy = (VH / 2 - view.oy) / view.s;
+  slots.sort((a, b) => Math.hypot(a[0] - cx, a[1] - cy) - Math.hypot(b[0] - cx, b[1] - cy));
+  slots = slots.slice(0, loose.length);
   for (let k = slots.length - 1; k > 0; k--) {
     const j = Math.floor(Math.random() * (k + 1));
     [slots[k], slots[j]] = [slots[j], slots[k]];
@@ -453,10 +467,28 @@ function tidyLoose() {
 
 // 作業スペースが画面から完全に消えないように表示位置を制限する
 function clampView() {
-  const lo = (size, s) => Math.min(0, size * (1 - s));
-  const hi = (size, s) => Math.max(0, size * (1 - s));
-  view.ox = clamp(view.ox, lo(W, view.s), hi(W, view.s));
-  view.oy = clamp(view.oy, lo(H, view.s), hi(H, view.s));
+  // 作業スペースの端が、画面の外に出すぎないようにする
+  const range = (screenSize, worldSize, s) => [
+    Math.min(0, screenSize - worldSize * s), Math.max(0, screenSize - worldSize * s)
+  ];
+  const [ox0, ox1] = range(VW, W, view.s);
+  const [oy0, oy1] = range(VH, H, view.s);
+  view.ox = clamp(view.ox, ox0, ox1);
+  view.oy = clamp(view.oy, oy0, oy1);
+}
+
+// 作業スペース全体が見える表示にする
+function fitView() {
+  const s = Math.min(VW / W, VH / H);
+  view = { s, ox: (VW - W * s) / 2, oy: (VH - H * s) / 2 };
+  needDraw = true;
+}
+
+// 盤面を画面の中央に置く表示にする（ゲーム開始時の表示）
+function centerView() {
+  view = { s: 1, ox: VW / 2 - (L.bx + BW / 2), oy: VH / 2 - (L.by + BH / 2) };
+  clampView();
+  needDraw = true;
 }
 
 function packState() {
@@ -494,6 +526,8 @@ function moveGroupTo(p, x, y) {
 
 // 1つの操作を適用する。who は 'h' か 'g'。成功したら true
 function applyAct(who, m) {
+  if (m.a === 'pause') { setPaused(!paused); dirty = true; needDraw = true; return true; }
+  if (paused && (m.a === 'grab' || m.a === 'tidy')) return false;   // 一時停止中は新しく動かせない
   if (m.a === 'tidy') { tidyLoose(); dirty = true; needDraw = true; return true; }
   const p = pieces[m.i];
   if (!p) return false;
@@ -583,7 +617,7 @@ function checkDone() {
   const all = pieces.every(q => Math.abs(q.x - (L.bx + q.c * L.pw)) < 1 && Math.abs(q.y - (L.by + q.r * L.ph)) < 1);
   if (all) {
     finished = true;
-    doneMs = Date.now() - startedAt;
+    doneMs = elapsed();
     updateFinish();
   }
 }
@@ -597,6 +631,32 @@ function addEvent(type, x, y) {
   }
 }
 
+// ---------- 効果音（音源ファイルなし。ブラウザで「カチッ」を作る） ----------
+let soundOn = false, audioCtx = null;
+function playClick() {
+  if (!soundOn || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(1400, t);
+  osc.frequency.exponentialRampToValueAtTime(500, t + 0.05);
+  gain.gain.setValueAtTime(0.25, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.08);
+}
+$('soundBtn').onclick = () => {
+  soundOn = !soundOn;
+  if (soundOn) {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume();
+    playClick();   // 確認用に1回鳴らす
+  }
+  $('soundBtn').textContent = soundOn ? '音オン' : '音オフ';
+};
+
 function addFx(ev) {
   const f = { type: ev.type, x: ev.x, y: ev.y, t: performance.now(), parts: [] };
   if (ev.type === 'big') {
@@ -606,6 +666,7 @@ function addFx(ev) {
     }
   }
   fx.push(f);
+  playClick();   // ピースがはまったとき（両方の画面で鳴る）
   needDraw = true;
 }
 
@@ -651,7 +712,7 @@ function startConfetti(ms) {
 // ---------- 座標・表示倍率 ----------
 function toScreen(e) {
   const r = cv.getBoundingClientRect();
-  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+  return { x: (e.clientX - r.left) * VW / r.width, y: (e.clientY - r.top) * VH / r.height };
 }
 function toWorld(s) {
   return { x: (s.x - view.ox) / view.s, y: (s.y - view.oy) / view.s };
@@ -750,6 +811,9 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
   }
 });
+window.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && pieces.length) localAct({ a: 'pause' });   // Esc で一時停止・再開
+});
 window.addEventListener('keyup', e => {
   if (e.code === 'Space') spaceDown = false;
 });
@@ -840,7 +904,7 @@ function draw() {
   const now = performance.now();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#fffdf8';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, VW, VH);
   applyView();
   if (!img || !L) return;
 
@@ -855,8 +919,8 @@ function draw() {
   ctx.setLineDash([]);
 
   // 画面に見えているピースだけ描く
-  const vx0 = -view.ox / view.s, vx1 = (W - view.ox) / view.s;
-  const vy0 = -view.oy / view.s, vy1 = (H - view.oy) / view.s;
+  const vx0 = -view.ox / view.s, vx1 = (VW - view.ox) / view.s;
+  const vy0 = -view.oy / view.s, vy1 = (VH - view.oy) / view.s;
   for (const i of order) {
     const p = pieces[i];
     if (p.x + L.pw + L.mx < vx0 || p.x - L.mx > vx1 || p.y + L.ph + L.my < vy0 || p.y - L.my > vy1) continue;
@@ -912,6 +976,18 @@ function draw() {
 
   // 演出やカーソルが続く間は再描画を続ける
   if (fx.length || cursorActive) needDraw = true;
+
+  // 一時停止中は画面全体に「一時停止中」を表示
+  if (paused) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(255,253,248,0.9)';
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.fillStyle = '#3b3228';
+    ctx.font = 'bold 40px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('一時停止中（Escキーまたはボタンで再開）', VW / 2, VH / 2);
+    ctx.textAlign = 'left';
+  }
 }
 
 function loop(now) {
@@ -926,19 +1002,34 @@ function loop(now) {
 
 function showGame() {
   show('game');
+  centerView();
   setStatus(role === 'h' ? '部屋を作りました' : '参加中');
   if (!looping) { looping = true; requestAnimationFrame(loop); }
   needDraw = true;
 }
 
 // ---------- タイマー ----------
+// 経過時間（一時停止中は止まったまま）
+function elapsed() {
+  return elapsedBase + (runStart !== null ? Date.now() - runStart : 0);
+}
+
+function setPaused(v) {
+  if (v === paused) return;
+  paused = v;
+  if (v) { elapsedBase = elapsed(); runStart = null; }
+  else runStart = Date.now();
+  $('pauseBtn').textContent = v ? '再開' : '一時停止';
+  needDraw = true;
+}
+
 function fmt(ms) {
   const s = Math.floor(ms / 1000);
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 setInterval(() => {
   if (!pieces.length) return;
-  $('timer').textContent = finished && doneMs != null ? fmt(doneMs) : fmt(Date.now() - startedAt);
+  $('timer').textContent = finished && doneMs != null ? fmt(doneMs) : fmt(elapsed());
 }, 250);
 
 // ---------- 画像・デフォルト絵 ----------
