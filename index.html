@@ -346,6 +346,14 @@ function onData(m) {
     case 'state':
       if (role === 'g') applyState(m);
       break;
+    case 'hb':
+      // 相手が今掴んでいないグループの掴みは解除する（解除の合図が届かなかった場合の救済）
+      if (role === 'h') {
+        for (const k of Object.keys(holds)) {
+          if (holds[k] === 'g' && Number(k) !== m.g) { delete holds[k]; dirty = true; }
+        }
+      }
+      break;
     case 'cur':
       partnerCur = { x: m.x, y: m.y, t: performance.now() };
       needDraw = true;
@@ -863,6 +871,10 @@ window.addEventListener('keyup', e => {
 });
 cv.addEventListener('pointerup', endPointer);
 cv.addEventListener('pointercancel', endPointer);
+// タブやウィンドウを切り替えたときも、掴みを必ず離す（離した合図が届かずピースが固まるのを防ぐ）
+cv.addEventListener('lostpointercapture', endPointer);
+window.addEventListener('blur', endPointer);
+document.addEventListener('visibilitychange', () => { if (document.hidden) endPointer(); });
 
 // ---------- 描画 ----------
 // ジグソーの輪郭を現在のパスに描く（左上 → 右上 → 右下 → 左下）
@@ -1053,7 +1065,15 @@ function draw() {
   }
 }
 
+// 作った側：自分が掴んでいないのに残っている掴みを解除する
+function releaseStaleHostHolds() {
+  for (const k of Object.keys(holds)) {
+    if (holds[k] === 'h' && !(dragging && dragging.g === Number(k))) { delete holds[k]; dirty = true; }
+  }
+}
+
 function loop(now) {
+  if (role === 'h') releaseStaleHostHolds();
   if (needDraw) { needDraw = false; draw(); }
   if (role === 'h' && dirty && conn && conn.open && now - lastBroadcast > 30) {
     sendState();
@@ -1096,6 +1116,11 @@ setInterval(() => {
   if (!pieces.length) return;
   $('timer').textContent = finished && doneMs != null ? fmt(doneMs) : fmt(elapsed());
 }, 250);
+
+// 参加側は「いま掴んでいるピース」を0.5秒ごとに知らせる
+setInterval(() => {
+  if (role === 'g' && conn && conn.open) conn.send({ t: 'hb', g: dragging ? dragging.g : null });
+}, 500);
 
 // ---------- 画像・デフォルト絵 ----------
 function loadImage(src) {
