@@ -99,6 +99,15 @@
   <p class="hint">ピースをドラッグで動かします。隣のピースを正しい位置に近づけると、くっついてグループになります。相手が掴んでいるピースは動かせません。背景をドラッグすると画面を動かせます。ホイールで拡大・縮小できます。</p>
   <div class="bar">
     <button id="newBtn" class="sub">新しく作り直す</button>
+    <span id="restartArea">
+      <button id="restartBtn" class="sub">新しい絵で再スタート</button>
+      <select id="restartSize">
+        <option value="8">かんたん（64ピース）</option>
+        <option value="10" selected>ふつう（100ピース）</option>
+        <option value="14">むずかしい（196ピース）</option>
+      </select>
+      <input type="file" id="restartFile" accept="image/*" style="display:none">
+    </span>
   </div>
 </section>
 
@@ -201,6 +210,16 @@ ghostBtn.addEventListener('pointerleave', ghostOff);
 ghostBtn.addEventListener('pointercancel', ghostOff);
 
 $('closeFinish').onclick = () => { $('finishOverlay').style.display = 'none'; };
+
+// 同じ部屋のまま、新しい絵で始め直す（作った側だけ操作できる）
+$('restartBtn').onclick = () => $('restartFile').click();
+$('restartFile').onchange = async () => {
+  const f = $('restartFile').files[0];
+  $('restartFile').value = '';
+  if (!f) return;
+  const url = await fileToDataUrl(f);
+  await restartPuzzle(url, +$('restartSize').value);
+};
 
 // ---------- 画面 ----------
 function show(id) {
@@ -347,12 +366,36 @@ function onData(m) {
   }
 }
 
+// 部屋はそのままに、新しい絵・難易度で始め直す（相手にも新しい絵を送る）
+async function restartPuzzle(dataUrl, n) {
+  cols = n;
+  img = await loadImage(dataUrl);
+  L = layoutFor();
+  makeEdges();
+  buildPieceCache();
+  pieces = makePieces();
+  order = pieces.map((_, i) => i);
+  holds = {};
+  elapsedBase = 0; runStart = Date.now(); paused = false;
+  doneMs = null; finished = false; shownFinish = false;
+  dragging = null; pendingEv = []; fx = []; partnerCur = null;
+  $('pauseBtn').textContent = '一時停止';
+  $('finishOverlay').style.display = 'none';
+  centerView();
+  if (conn && conn.open) sendImage();
+  needDraw = true;
+}
+
 function startGuest(m, im) {
   role = 'g';
   img = im;
   cols = m.cols;
   L = layoutFor();
   EH = m.e.h; EV = m.e.v;
+  // 途中から新しい絵になった場合の初期化
+  dragging = null; fx = []; partnerCur = null;
+  $('finishOverlay').style.display = 'none';
+  $('pauseBtn').textContent = paused ? '再開' : '一時停止';
   buildPieceCache();
   pieces = m.p.map((a, i) => mkPiece(i, a));
   order = m.o.slice();
@@ -747,15 +790,16 @@ cv.addEventListener('pointerdown', e => {
   const sc = toScreen(e), w = toWorld(sc);
   applyView();
   let hit = -1;
-  for (let k = order.length - 1; k >= 0; k--) {
-    const i = order[k], p = pieces[i];
+  const topFirst = topFirstOrder();
+  for (const i of topFirst) {
+    const p = pieces[i];
     tracePiece(p.c, p.r, p.x, p.y);
     if (ctx.isPointInPath(sc.x, sc.y)) { hit = i; break; }
   }
   // ピースの輪郭のすぐ近くをクリックした場合も、そのピースを掴む
   if (hit < 0) {
-    for (let k = order.length - 1; k >= 0; k--) {
-      const i = order[k], p = pieces[i], mg = 10;
+    for (const i of topFirst) {
+      const p = pieces[i], mg = 10;
       if (w.x >= p.x - mg && w.x <= p.x + L.pw + mg && w.y >= p.y - mg && w.y <= p.y + L.ph + mg) { hit = i; break; }
     }
   }
@@ -900,6 +944,21 @@ function drawPiece(p, i) {
   ctx.stroke();
 }
 
+// 描く層：0=ふつう、1=正解の位置、2=掴んでいる
+function layerOf(i) {
+  if (holds[pieces[i].g] !== undefined) return 2;
+  return pieces[i].fixed ? 1 : 0;
+}
+
+// クリック判定の順番（画面で上に見えているものから）
+function topFirstOrder() {
+  const out = [];
+  for (const lv of [2, 1, 0]) {
+    for (let k = order.length - 1; k >= 0; k--) if (layerOf(order[k]) === lv) out.push(order[k]);
+  }
+  return out;
+}
+
 function draw() {
   const now = performance.now();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -921,10 +980,14 @@ function draw() {
   // 画面に見えているピースだけ描く
   const vx0 = -view.ox / view.s, vx1 = (VW - view.ox) / view.s;
   const vy0 = -view.oy / view.s, vy1 = (VH - view.oy) / view.s;
-  for (const i of order) {
-    const p = pieces[i];
-    if (p.x + L.pw + L.mx < vx0 || p.x - L.mx > vx1 || p.y + L.ph + L.my < vy0 || p.y - L.my > vy1) continue;
-    drawPiece(p, i);
+  // 描く順番：ふつうのピース → 正解の位置のピース → 掴んでいるピース（正解のピースが埋もれないように）
+  for (const lv of [0, 1, 2]) {
+    for (const i of order) {
+      if (layerOf(i) !== lv) continue;
+      const p = pieces[i];
+      if (p.x + L.pw + L.mx < vx0 || p.x - L.mx > vx1 || p.y + L.ph + L.my < vy0 || p.y - L.my > vy1) continue;
+      drawPiece(p, i);
+    }
   }
 
   // 完成見本（ボタンを押している間だけ）
@@ -1003,6 +1066,8 @@ function loop(now) {
 function showGame() {
   show('game');
   centerView();
+  // 絵の差し替えは作った側だけ
+  $('restartArea').style.display = role === 'h' ? '' : 'none';
   setStatus(role === 'h' ? '部屋を作りました' : '参加中');
   if (!looping) { looping = true; requestAnimationFrame(loop); }
   needDraw = true;
