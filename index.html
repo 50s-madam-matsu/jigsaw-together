@@ -374,7 +374,7 @@ function applyState(m) {
   m.p.forEach((a, i) => {
     const p = pieces[i];
     if (dragG !== null && p.g === dragG) return;
-    p.x = a[0]; p.y = a[1]; p.g = a[2]; p.by = a[3];
+    p.x = a[0]; p.y = a[1]; p.g = a[2]; p.by = a[3]; p.fixed = !!a[4];
   });
   order = m.o.slice();
   finished = m.done; doneMs = m.ms;
@@ -392,7 +392,7 @@ function layoutFor() {
 }
 
 function mkPiece(i, a) {
-  return { c: i % cols, r: Math.floor(i / cols), x: a[0], y: a[1], g: a[2], by: a[3] };
+  return { c: i % cols, r: Math.floor(i / cols), x: a[0], y: a[1], g: a[2], by: a[3], fixed: !!a[4] };
 }
 
 function makePieces() {
@@ -422,13 +422,27 @@ function tidyLoose() {
   const count = {};
   pieces.forEach(p => { count[p.g] = (count[p.g] || 0) + 1; });
   const loose = [];
-  pieces.forEach((p, i) => { if (count[p.g] === 1 && holds[p.g] === undefined) loose.push(i); });
-  const stepX = L.pw + 12, stepY = L.ph + 12;
-  const slots = [];
-  for (let y = 0; y + L.ph <= H; y += stepY)
-    for (let x = 0; x + L.pw <= W; x += stepX)
-      if (!overlapsBoard(x, y)) slots.push([x, y]);
+  pieces.forEach((p, i) => { if (count[p.g] === 1 && holds[p.g] === undefined && !p.fixed) loose.push(i); });
+  // 隣同士が並ばないように、ピースの順番をシャッフルする
+  for (let k = loose.length - 1; k > 0; k--) {
+    const j = Math.floor(Math.random() * (k + 1));
+    [loose[k], loose[j]] = [loose[j], loose[k]];
+  }
+  // 間隔を広めに取り、入りきらない場合だけ少しずつ詰める
+  let slots = [];
+  for (const gap of [24, 16, 8, 2]) {
+    slots = [];
+    const stepX = L.pw + gap, stepY = L.ph + gap;
+    for (let y = 0; y + L.ph <= H; y += stepY)
+      for (let x = 0; x + L.pw <= W; x += stepX)
+        if (!overlapsBoard(x, y)) slots.push([x, y]);
+    if (slots.length >= loose.length) break;
+  }
   if (!slots.length) return;
+  for (let k = slots.length - 1; k > 0; k--) {
+    const j = Math.floor(Math.random() * (k + 1));
+    [slots[k], slots[j]] = [slots[j], slots[k]];
+  }
   loose.forEach((i, k) => {
     const s = slots[k % slots.length];
     pieces[i].x = s[0];
@@ -445,7 +459,7 @@ function clampView() {
 }
 
 function packState() {
-  return pieces.map(p => [p.x, p.y, p.g, p.by]);
+  return pieces.map(p => [p.x, p.y, p.g, p.by, p.fixed ? 1 : 0]);
 }
 
 // 内側の境界ごとに凸の向きをランダムに決める
@@ -484,7 +498,7 @@ function applyAct(who, m) {
   if (!p) return false;
   let ok = false;
   if (m.a === 'grab') {
-    if (holds[p.g] === undefined) {
+    if (holds[p.g] === undefined && !p.fixed) {
       holds[p.g] = who;
       const mem = membersOf(p.g);
       order = order.filter(k => !mem.includes(k));
@@ -529,7 +543,12 @@ function releaseGroup(who, g0) {
         if (Math.hypot(b.x - ex, b.y - ey) < snapD()) {
           const gb = b.g;
           const big = a.by !== null && b.by !== null && a.by !== b.by;   // 別の人が組んだもの同士
-          moveGroupBy(gb, ex - b.x, ey - b.y);
+          if (b.fixed) {
+            // 相手が固定されている場合は、掴んでいる側を動かして合わせる
+            moveGroupBy(g0, b.x - dc * L.pw - a.x, b.y - dr * L.ph - a.y);
+          } else {
+            moveGroupBy(gb, ex - b.x, ey - b.y);
+          }
           pieces.forEach(q => { if (q.g === gb) q.g = g0; });
           addEvent(big ? 'big' : 'small', a.x + L.pw / 2, a.y + L.ph / 2);
           merged = true;
@@ -549,7 +568,11 @@ function releaseGroup(who, g0) {
     const q = pieces[anchor];
     moveGroupBy(g0, L.bx + q.c * L.pw - q.x, L.by + q.r * L.ph - q.y);
     addEvent('small', q.x + L.pw / 2, q.y + L.ph / 2);
+    membersOf(g0).forEach(i => { pieces[i].fixed = true; });   // 正解の位置に置いたら固定
   }
+
+  // 固定されたピースと合体したら、グループ全体を固定する
+  if (membersOf(g0).some(i => pieces[i].fixed)) membersOf(g0).forEach(i => { pieces[i].fixed = true; });
 
   checkDone();
 }
@@ -667,6 +690,13 @@ cv.addEventListener('pointerdown', e => {
     tracePiece(p.c, p.r, p.x, p.y);
     if (ctx.isPointInPath(sc.x, sc.y)) { hit = i; break; }
   }
+  // ピースの輪郭のすぐ近くをクリックした場合も、そのピースを掴む
+  if (hit < 0) {
+    for (let k = order.length - 1; k >= 0; k--) {
+      const i = order[k], p = pieces[i], mg = 10;
+      if (w.x >= p.x - mg && w.x <= p.x + L.pw + mg && w.y >= p.y - mg && w.y <= p.y + L.ph + mg) { hit = i; break; }
+    }
+  }
   if (hit >= 0) {
     if (!finished && localAct({ a: 'grab', i: hit })) {
       const p = pieces[hit];
@@ -674,7 +704,7 @@ cv.addEventListener('pointerdown', e => {
       cv.setPointerCapture(e.pointerId);
     }
   } else {
-    panning = { sx: sc.x, sy: sc.y, ox: view.ox, oy: view.oy };
+    panning = { sx: sc.x, sy: sc.y, ox: view.ox, oy: view.oy, moved: false };
     cv.setPointerCapture(e.pointerId);
   }
   needDraw = true;
@@ -684,6 +714,9 @@ cv.addEventListener('pointermove', e => {
   const sc = toScreen(e), w = toWorld(sc);
   sendCur(w);
   if (panning) {
+    // ほんの少し触っただけでは画面を動かさない（6px以上動かしたら移動）
+    if (!panning.moved && Math.hypot(sc.x - panning.sx, sc.y - panning.sy) < 6) return;
+    panning.moved = true;
     view.ox = panning.ox + (sc.x - panning.sx);
     view.oy = panning.oy + (sc.y - panning.sy);
     clampView();
@@ -785,7 +818,8 @@ function drawPiece(p, i) {
   ctx.drawImage(pieceCache[i], p.x - L.mx, p.y - L.my, L.pw + 2 * L.mx, L.ph + 2 * L.my);
   tracePiece(p.c, p.r, p.x, p.y);
   const h = holds[p.g];
-  if (h === undefined) { ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; }
+  if (p.fixed) { ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1; }
+  else if (h === undefined) { ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 1; }
   else { ctx.strokeStyle = COL[h]; ctx.lineWidth = 3; }
   ctx.stroke();
 }
