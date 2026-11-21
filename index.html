@@ -89,6 +89,12 @@
       <button id="zoomIn" class="sub">＋</button>
       <button id="resetView" class="sub">全体表示</button>
       <button id="centerView" class="sub">盤面を中央に</button>
+      <select id="bgSelect" title="背景色">
+        <option value="#fffdf8" selected>背景：クリーム</option>
+        <option value="#ffffff">背景：白</option>
+        <option value="#cfd8dc">背景：水色グレー</option>
+        <option value="#4a4a4a">背景：濃いグレー</option>
+      </select>
       <button id="soundBtn" class="sub">音オフ</button>
       <button id="pauseBtn" class="sub">一時停止</button>
       <button id="tidyBtn" class="sub">ピースを整理</button>
@@ -150,6 +156,7 @@ let elapsedBase = 0, runStart = null, paused = false;   // 経過時間（一時
 let doneMs = null, finished = false, shownFinish = false;
 let pendingEv = [], fx = [];
 let showGhost = false;
+let bgColor = '#fffdf8';        // 作業スペースの背景色
 let spaceDown = false;          // スペースキーが押されている間は true
 let chunkBuf = null, looping = false, roomId = null;
 
@@ -200,6 +207,7 @@ $('resetView').onclick = fitView;
 $('centerView').onclick = centerView;
 $('tidyBtn').onclick = () => { localAct({ a: 'tidy' }); };
 $('pauseBtn').onclick = () => { if (pieces.length) localAct({ a: 'pause' }); };
+$('bgSelect').onchange = () => { bgColor = $('bgSelect').value; needDraw = true; };
 
 const ghostBtn = $('ghostBtn');
 const ghostOn = () => { showGhost = true; needDraw = true; };
@@ -956,16 +964,17 @@ function drawPiece(p, i) {
   ctx.stroke();
 }
 
-// 描く層：0=ふつう、1=正解の位置、2=掴んでいる
+// 描く層：0=正解の位置（一番下）、1=ふつうのピース、2=掴んでいる（一番上）
 function layerOf(i) {
   if (holds[pieces[i].g] !== undefined) return 2;
-  return pieces[i].fixed ? 1 : 0;
+  return pieces[i].fixed ? 0 : 1;
 }
 
 // クリック判定の順番（画面で上に見えているものから）
 function topFirstOrder() {
   const out = [];
-  for (const lv of [2, 1, 0]) {
+  // 固定されたピースは掴めないので判定から外す（その下のピースを掴めるように）
+  for (const lv of [2, 1]) {
     for (let k = order.length - 1; k >= 0; k--) if (layerOf(order[k]) === lv) out.push(order[k]);
   }
   return out;
@@ -974,7 +983,7 @@ function topFirstOrder() {
 function draw() {
   const now = performance.now();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#fffdf8';
+  ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, VW, VH);
   applyView();
   if (!img || !L) return;
@@ -992,7 +1001,7 @@ function draw() {
   // 画面に見えているピースだけ描く
   const vx0 = -view.ox / view.s, vx1 = (VW - view.ox) / view.s;
   const vy0 = -view.oy / view.s, vy1 = (VH - view.oy) / view.s;
-  // 描く順番：ふつうのピース → 正解の位置のピース → 掴んでいるピース（正解のピースが埋もれないように）
+  // 描く順番：正解の位置のピース → ふつうのピース → 掴んでいるピース（一番上）
   for (const lv of [0, 1, 2]) {
     for (const i of order) {
       if (layerOf(i) !== lv) continue;
