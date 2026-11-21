@@ -637,8 +637,9 @@ function releaseGroup(who, g0) {
         if (Math.hypot(b.x - ex, b.y - ey) < snapD()) {
           const gb = b.g;
           const big = a.by !== null && b.by !== null && a.by !== b.by;   // 別の人が組んだもの同士
-          if (b.fixed) {
-            // 相手が固定されている場合は、掴んでいる側を動かして合わせる
+          // 動かすのは「今置いたほう」（小さいほう）にする。相手が固定されている場合も、こちらを動かす
+          const moveOurs = b.fixed || membersOf(g0).length <= membersOf(gb).length;
+          if (moveOurs) {
             moveGroupBy(g0, b.x - dc * L.pw - a.x, b.y - dr * L.ph - a.y);
           } else {
             moveGroupBy(gb, ex - b.x, ey - b.y);
